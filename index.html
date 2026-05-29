@@ -662,6 +662,10 @@ function sv(d){try{localStorage.setItem(SK,JSON.stringify(d))}catch{}}
 let D=ld();
 
 function init(){
+  // Load saved Naver API keys if any
+  const nid=localStorage.getItem('naver-id');
+  const nsec=localStorage.getItem('naver-secret');
+  if(nid&&nsec){window.NAVER_CLIENT_ID_RT=nid;window.NAVER_CLIENT_SECRET_RT=nsec;}
   if(!D.folders)D.folders=[];
   if(!D.wishlist)D.wishlist=[];
   if(!D.entries)D.entries=[];
@@ -957,6 +961,10 @@ function saveEdit(){const e=D.entries.find(x=>x.id===eid);e.text=document.getEle
 function delEntry(id){if(!confirm('삭제할까요?'))return;const e=D.entries.find(x=>x.id===id);const t=e.type;D.entries=D.entries.filter(x=>x.id!==id);sv(D);rEntries(t);rStats();}
 
 // ── Book search (Kakao API) ──
+// Naver API key (optional — set once to get better Korean book results)
+const NAVER_CLIENT_ID = '';
+const NAVER_CLIENT_SECRET = '';
+
 function searchBooks(){
   clearTimeout(bookSearchTimer);
   const q=document.getElementById('bk-search').value.trim();
@@ -965,47 +973,96 @@ function searchBooks(){
   bookSearchTimer=setTimeout(async()=>{
     r.style.display='block';
     r.innerHTML='<div style="padding:12px;text-align:center;font-size:13px;color:var(--ink-mid)">검색 중...</div>';
-    try{
-      // Google Books API — no key needed, supports Korean
-      const res=await fetch(
-        `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=10&printType=books&langRestrict=ko`
-      );
-      if(!res.ok)throw new Error();
-      const data=await res.json();
-      if(!data.items||!data.items.length){
-        // fallback: search without language restriction
-        const res2=await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=10&printType=books`);
-        const data2=await res2.json();
-        if(!data2.items||!data2.items.length){
-          r.innerHTML='<div style="padding:12px;text-align:center;font-size:13px;color:var(--ink-mid)">검색 결과가 없어요.<br>아래에 직접 입력해주세요.</div>';
-          return;
-        }
-        data.items=data2.items;
-      }
-      r.innerHTML=data.items.map(item=>{
-        const info=item.volumeInfo||{};
-        const title=info.title||'';
-        const authors=(info.authors||[]).join(', ');
-        const publisher=info.publisher||'';
-        // Google Books thumbnail — use https
-        const thumbnail=(info.imageLinks?.thumbnail||info.imageLinks?.smallThumbnail||'').replace('http://','https://');
-        const bookData=JSON.stringify({title,authors:info.authors||[],publisher,thumbnail}).replace(/"/g,'&quot;');
-        return`<div class="search-result-item" onclick="selectBook(${bookData})">
-          ${thumbnail
-            ?`<img src="${thumbnail}" class="sr-cover" loading="lazy" onerror="this.style.display='none';this.nextSibling.style.display='flex'">`
-            :''}
-          <div class="sr-cover-ph" style="${thumbnail?'display:none':''}">${title.slice(0,4)}</div>
-          <div class="sr-info">
-            <div class="sr-title">${title}</div>
-            <div class="sr-author">${authors}</div>
-            <div class="sr-publisher">${publisher}</div>
-          </div>
-        </div>`;
-      }).join('');
-    }catch{
-      r.innerHTML='<div style="padding:12px;text-align:center;font-size:13px;color:var(--ink-mid)">검색 중 오류가 발생했어요.<br>아래에 직접 입력해주세요.</div>';
+
+    // Try Naver first if keys set, else Google Books
+    const hasNaver=(window.NAVER_CLIENT_ID_RT||NAVER_CLIENT_ID)&&(window.NAVER_CLIENT_SECRET_RT||NAVER_CLIENT_SECRET);
+    if(hasNaver){
+      await searchNaver(q,r);
+    } else {
+      await searchGoogleBooks(q,r);
     }
   },400);
+}
+
+async function searchGoogleBooks(q,r){
+  try{
+    const url=`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=10&printType=books`;
+    const res=await fetch(url);
+    if(!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data=await res.json();
+    if(!data.items||!data.items.length){
+      r.innerHTML='<div style="padding:12px;text-align:center;font-size:13px;color:var(--ink-mid)">검색 결과가 없어요.<br>아래에 직접 입력해주세요.</div>';
+      return;
+    }
+    r.innerHTML=data.items.map(item=>{
+      const info=item.volumeInfo||{};
+      const title=(info.title||'').replace(/<[^>]*>/g,'');
+      const authors=(info.authors||[]).join(', ');
+      const publisher=info.publisher||'';
+      const thumbnail=(info.imageLinks?.thumbnail||info.imageLinks?.smallThumbnail||'')
+        .replace('http://','https://').replace('zoom=1','zoom=2');
+      const bookData=JSON.stringify({title,authors:info.authors||[],publisher,thumbnail}).replace(/"/g,'&quot;');
+      return`<div class="search-result-item" onclick="selectBook(${bookData})">
+        ${thumbnail?`<img src="${thumbnail}" class="sr-cover" loading="lazy" onerror="this.style.display='none'">`:''}
+        <div class="sr-cover-ph"${thumbnail?' style="display:none"':''}>${title.slice(0,4)}</div>
+        <div class="sr-info">
+          <div class="sr-title">${title}</div>
+          <div class="sr-author">${authors}</div>
+          <div class="sr-publisher">${publisher}</div>
+        </div>
+      </div>`;
+    }).join('');
+  }catch(e){
+    r.innerHTML=`<div style="padding:14px 12px">
+      <p style="font-size:13px;color:var(--ink-mid);margin-bottom:10px">검색 연결에 실패했어요. 아래에 직접 입력하거나, 네이버 API를 설정하면 한국 책을 더 잘 검색할 수 있어요.</p>
+      <button onclick="showNaverSetup()" style="font-size:12px;color:var(--accent);background:none;border:1px solid var(--accent-light);border-radius:8px;padding:5px 10px;cursor:pointer;font-family:inherit">네이버 API 설정하기</button>
+    </div>`;
+  }
+}
+
+async function searchNaver(q,r){
+  const nid=window.NAVER_CLIENT_ID_RT||NAVER_CLIENT_ID;
+  const nsec=window.NAVER_CLIENT_SECRET_RT||NAVER_CLIENT_SECRET;
+  try{
+    const encoded=encodeURIComponent(`https://openapi.naver.com/v1/search/book.json?query=${encodeURIComponent(q)}&display=10`);
+    const res=await fetch(`https://corsproxy.io/?${encoded}`,{
+      headers:{'X-Naver-Client-Id':nid,'X-Naver-Client-Secret':nsec}
+    });
+    if(!res.ok) throw new Error();
+    const data=await res.json();
+    if(!data.items||!data.items.length){r.innerHTML='<div style="padding:12px;text-align:center;font-size:13px;color:var(--ink-mid)">검색 결과가 없어요</div>';return;}
+    r.innerHTML=data.items.map(d=>{
+      const title=d.title.replace(/<[^>]*>/g,'');
+      const author=d.author.replace(/<[^>]*>/g,'');
+      const publisher=d.publisher.replace(/<[^>]*>/g,'');
+      const thumbnail=d.image||'';
+      const bookData=JSON.stringify({title,authors:[author],publisher,thumbnail}).replace(/"/g,'&quot;');
+      return`<div class="search-result-item" onclick="selectBook(${bookData})">
+        ${thumbnail?`<img src="${thumbnail}" class="sr-cover" loading="lazy">`:''}
+        <div class="sr-cover-ph"${thumbnail?' style="display:none"':''}>${title.slice(0,4)}</div>
+        <div class="sr-info">
+          <div class="sr-title">${title}</div>
+          <div class="sr-author">${author}</div>
+          <div class="sr-publisher">${publisher}</div>
+        </div>
+      </div>`;
+    }).join('');
+  }catch{
+    await searchGoogleBooks(q,r);
+  }
+}
+
+function showNaverSetup(){
+  const key=prompt('네이버 개발자센터(developers.naver.com)에서 발급한\nClient ID를 입력하세요:');
+  if(!key)return;
+  const secret=prompt('Client Secret을 입력하세요:');
+  if(!secret)return;
+  localStorage.setItem('naver-id',key);
+  localStorage.setItem('naver-secret',secret);
+  // Apply without reload
+  window.NAVER_CLIENT_ID_RT=key;
+  window.NAVER_CLIENT_SECRET_RT=secret;
+  showToast('네이버 API가 설정됐어요! 다시 검색해보세요.');
 }
 
 function selectBook(book){
